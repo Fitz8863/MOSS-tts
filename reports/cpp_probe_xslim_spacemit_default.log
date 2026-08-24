@@ -1,0 +1,75 @@
+model=quantized_xslim_dynamic/models/MOSS-TTS-Nano-100M-ONNX/moss_tts_local_decoder.onnx ep=spacemit
+available_providers=CPUExecutionProvider,
+spacemit_ep_init=ok
+session_create_ms=331.045241
+input_count=3
+input[0] name=global_hidden type=1 elem=1 shape=[1,768]
+input[1] name=text_token_id type=1 elem=6 shape=[1]
+input[2] name=audio_prefix_token_ids type=1 elem=6 shape=[1,15]
+output_count=2
+output[0] name=text_logits type=1 elem=1 shape=[1,16384]
+output[1] name=audio_logits type=1 elem=1 shape=[1,16,1024]
+ep_assignment_count=63
+ep_assignment[0] ep=SpaceMITExecutionProvider nodes=188
+ep_assignment[1] ep=CPUExecutionProvider nodes=1
+ep_assignment[2] ep=CPUExecutionProvider nodes=1
+ep_assignment[3] ep=CPUExecutionProvider nodes=1
+ep_assignment[4] ep=CPUExecutionProvider nodes=1
+ep_assignment[5] ep=CPUExecutionProvider nodes=1
+ep_assignment[6] ep=CPUExecutionProvider nodes=1
+ep_assignment[7] ep=CPUExecutionProvider nodes=1
+ep_assignment[8] ep=CPUExecutionProvider nodes=1
+ep_assignment[9] ep=CPUExecutionProvider nodes=1
+ep_assignment[10] ep=CPUExecutionProvider nodes=1
+ep_assignment[11] ep=CPUExecutionProvider nodes=1
+ep_assignment[12] ep=CPUExecutionProvider nodes=1
+ep_assignment[13] ep=CPUExecutionProvider nodes=1
+ep_assignment[14] ep=CPUExecutionProvider nodes=1
+ep_assignment[15] ep=CPUExecutionProvider nodes=1
+ep_assignment[16] ep=CPUExecutionProvider nodes=1
+ep_assignment[17] ep=CPUExecutionProvider nodes=1
+ep_assignment[18] ep=CPUExecutionProvider nodes=1
+ep_assignment[19] ep=CPUExecutionProvider nodes=1
+ep_assignment[20] ep=CPUExecutionProvider nodes=1
+ep_assignment[21] ep=CPUExecutionProvider nodes=1
+ep_assignment[22] ep=CPUExecutionProvider nodes=1
+ep_assignment[23] ep=CPUExecutionProvider nodes=1
+ep_assignment[24] ep=CPUExecutionProvider nodes=1
+ep_assignment[25] ep=CPUExecutionProvider nodes=1
+ep_assignment[26] ep=CPUExecutionProvider nodes=1
+ep_assignment[27] ep=CPUExecutionProvider nodes=1
+ep_assignment[28] ep=CPUExecutionProvider nodes=1
+ep_assignment[29] ep=CPUExecutionProvider nodes=1
+ep_assignment[30] ep=CPUExecutionProvider nodes=1
+ep_assignment[31] ep=CPUExecutionProvider nodes=1
+ep_assignment[32] ep=CPUExecutionProvider nodes=1
+ep_assignment[33] ep=CPUExecutionProvider nodes=1
+ep_assignment[34] ep=CPUExecutionProvider nodes=1
+ep_assignment[35] ep=CPUExecutionProvider nodes=1
+ep_assignment[36] ep=CPUExecutionProvider nodes=1
+ep_assignment[37] ep=CPUExecutionProvider nodes=1
+ep_assignment[38] ep=CPUExecutionProvider nodes=1
+ep_assignment[39] ep=CPUExecutionProvider nodes=1
+ep_assignment[40] ep=CPUExecutionProvider nodes=1
+ep_assignment[41] ep=CPUExecutionProvider nodes=1
+ep_assignment[42] ep=CPUExecutionProvider nodes=1
+ep_assignment[43] ep=CPUExecutionProvider nodes=1
+ep_assignment[44] ep=CPUExecutionProvider nodes=1
+ep_assignment[45] ep=CPUExecutionProvider nodes=1
+ep_assignment[46] ep=CPUExecutionProvider nodes=1
+ep_assignment[47] ep=CPUExecutionProvider nodes=1
+ep_assignment[48] ep=CPUExecutionProvider nodes=1
+ep_assignment[49] ep=CPUExecutionProvider nodes=1
+ep_assignment[50] ep=CPUExecutionProvider nodes=1
+ep_assignment[51] ep=CPUExecutionProvider nodes=1
+ep_assignment[52] ep=CPUExecutionProvider nodes=1
+ep_assignment[53] ep=CPUExecutionProvider nodes=1
+ep_assignment[54] ep=CPUExecutionProvider nodes=1
+ep_assignment[55] ep=CPUExecutionProvider nodes=1
+ep_assignment[56] ep=CPUExecutionProvider nodes=1
+ep_assignment[57] ep=CPUExecutionProvider nodes=1
+ep_assignment[58] ep=CPUExecutionProvider nodes=1
+ep_assignment[59] ep=CPUExecutionProvider nodes=1
+ep_assignment[60] ep=CPUExecutionProvider nodes=1
+ep_assignment[61] ep=CPUExecutionProvider nodes=1
+ep_assignment[62] ep=CPUExecutionProvider nodes=1

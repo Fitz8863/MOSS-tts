@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "source_dir": "H:\\MOSS-TTS-Nano-main\\models\\MOSS-TTS-Nano-100M-ONNX",
+  "quantization": {
+    "mode": "dynamic",
+    "weight_type": "qint8",
+    "op_types": [
+      "MatMul"
+    ],
+    "per_channel": false,
+    "reduce_range": false
+  }
+}

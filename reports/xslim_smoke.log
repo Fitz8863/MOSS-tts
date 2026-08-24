@@ -1,0 +1,8 @@
+2026-08-24 21:32:16 | [1m__main__                [0m | [1mINFO    [0m | [1mNo config provided, using default config, dynamic quantization...[0m
+2026-08-24 21:32:16 | [1mxslim.xslim_setting     [0m | [1mINFO    [0m | [1mset higher precision level.[0m
+2026-08-24 21:32:16 | [1mxslim.xslim_pipeline    [0m | [1mINFO    [0m | [1musing api input onnx model models/MOSS-TTS-Nano-100M-ONNX/moss_tts_local_decoder.onnx.[0m
+2026-08-24 21:32:16 | [1mxslim.xslim_pipeline    [0m | [1mINFO    [0m | [1musing api output path quantized_xslim_dynamic/smoke/moss_tts_local_decoder.q.onnx.[0m
+2026-08-24 21:32:20 | [1mxslim.onnx_graph_helper [0m | [1mINFO    [0m | [1msimplify onnx model...[0m
+2026-08-24 21:32:26 | [1mxslim.quantizer.dynamic_quantizer[0m | [1mINFO    [0m | [1mquantize onnx model dynamic...[0m
+2026-08-24 21:32:27 | [1mxslim.onnx_graph_helper [0m | [1mINFO    [0m | [1msimplify onnx model...[0m
+2026-08-24 21:32:31 | [1mxslim.xslim_pipeline    [0m | [1mINFO    [0m | [1mquantization eplased time 15.50 s[0m

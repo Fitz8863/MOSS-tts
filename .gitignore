@@ -1,0 +1,50 @@
+# Large model artifacts are provisioned separately on the K3 board.
+# GitHub normal repositories reject individual files larger than 100 MiB.
+models/**/*.onnx
+models/**/*.onnx.data
+models/**/*.data
+models/**/*.bin
+models/**/*.pt
+models/**/*.pth
+models/**/*.safetensors
+models/**/*.msc
+models/**/*.model
+models/**/*.spm
+models/**/*.vocab
+models_int8/
+quantized_xslim_dynamic/tts/
+quantized_xslim_dynamic/codec/
+quantized_xslim_dynamic/smoke/
+quantized_xslim_dynamic/models/**/*.onnx
+quantized_xslim_dynamic/models/**/*.onnx.data
+quantized_xslim_dynamic/models/**/*.data
+quantized_xslim_dynamic/models/**/*.bin
+quantized_xslim_dynamic/models/**/*.pt
+quantized_xslim_dynamic/models/**/*.pth
+quantized_xslim_dynamic/models/**/*.safetensors
+
+# Board-only binary/runtime dependency bundle.
+board_root_spm/
+
+# Runtime/generated artifacts.
+__pycache__/
+*.py[cod]
+*.so
+*.o
+*.a
+cpp/ort_ep_probe
+outputs/
+generated_audio/
+benchmark_result.json
+*.wav
+*.mp3
+*.flac
+
+# Local/editor/system files.
+.env
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+*~
