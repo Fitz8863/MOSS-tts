@@ -1,1 +1,0 @@
-[1;31m2026-08-24 22:08:01.128562157 [E:onnxruntime:, sequential_executor.cc:572 ExecuteKernel] Non-zero status code returned while running SpineSubgraph_14323044620531557696_1 node. Name:'SpaceMITExecutionProvider_SpineSubgraph_14323044620531557696_1_0' Status Message: tcm buffer acquire failed for core id 0.[m

@@ -1,7 +1,0 @@
-2026-08-24 22:15:40,287 INFO root: normalized text chars_before=22 chars_after=26 stage=robust
-2026-08-24 22:15:40,288 INFO root: text normalization method=robust language=n/a text_chars=26
-2026-08-24 22:15:40,288 INFO root: using built-in voice preset: Junhao
-2026-08-24 22:15:40,289 INFO root: normalized text chars_before=22 chars_after=26 stage=robust
-2026-08-24 22:15:58,798 INFO root: saved generated audio to /home/spacemit/projects/MOSS-tts-A100/outputs/xslim_spacemit_32.wav sample_rate=48000 frames=32 sample_mode=fixed streaming=True execution_provider=spacemit
-command_exit=0
-output=outputs/xslim_spacemit_32.wav bytes=491564 mtime=2026-08-24 22:15:58.798093686 +0800
