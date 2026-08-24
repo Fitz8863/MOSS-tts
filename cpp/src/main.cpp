@@ -253,7 +253,7 @@ public:
         if (!sp_.Encode(text, &token_ids).ok() || token_ids.empty()) throw std::runtime_error("SentencePiece tokenization failed");
         InputRows rows = build_rows(token_ids, voice);
         std::vector<Ort::Value> prefill_outputs = run_prefill(rows);
-        std::vector<std::array<int32_t, 16>> frames = run_decode(prefill_outputs, max_frames, seed);
+        std::vector<std::array<int32_t, 16>> frames = run_decode(prefill_outputs, rows.sequence_length, max_frames, seed);
         if (frames.empty()) throw std::runtime_error("model generated no audio frames");
         return decode_audio(frames);
     }
@@ -342,18 +342,21 @@ private:
         return p && p[0] != 0;
     }
 
-    std::vector<std::array<int32_t, 16>> run_decode(std::vector<Ort::Value> &past, int max_frames, uint32_t seed) {
+    std::vector<std::array<int32_t, 16>> run_decode(std::vector<Ort::Value> &past, int64_t prefill_length, int max_frames, uint32_t seed) {
         std::vector<std::array<int32_t, 16>> frames;
         std::vector<float> hidden = last_hidden(past[0]);
         const int cap = std::min(std::max(1, max_frames), paths_.cfg.max_new_frames);
         std::vector<std::unordered_set<int>> seen(paths_.cfg.n_vq);
         std::mt19937 rng(seed);
         std::uniform_real_distribution<float> uni(1e-6f, 1.0f - 1e-6f);
-        int32_t past_len = 0;
-        // The prefill sequence length is inferred from the present KV cache shape.
-        auto past_shape = past[1].GetTensorTypeAndShapeInfo().GetShape();
-        if (past_shape.size() >= 3) past_len = static_cast<int32_t>(past_shape[2]);
-        else throw std::runtime_error("cannot infer prefill KV sequence length");
+        // The ONNX export uses past_valid_lengths for the number of valid prompt
+        // rows, not for the number of attention heads.  Use the exact prefill
+        // attention length from the input rows.  The previous implementation
+        // read KV dimension 2 (12 heads) as the length; decode_step then saw an
+        // invalid cache length and commonly stopped after one frame (0.08 s).
+        if (prefill_length <= 0 || prefill_length > std::numeric_limits<int32_t>::max())
+            throw std::runtime_error("invalid prefill sequence length");
+        int32_t past_len = static_cast<int32_t>(prefill_length);
 
         for (int step = 0; step < cap; ++step) {
             std::vector<int32_t> seen_mask(paths_.cfg.n_vq * paths_.cfg.codebook_sizes[0], 0);
