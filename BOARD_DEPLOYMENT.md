@@ -81,6 +81,38 @@ INT8 ONNX smoke 成功
 
 短帧 smoke 的 RTF 受固定 Session/codec 开销影响，不作为长文本实时性结论。正式对比应固定文本、seed、帧数、线程数和 affinity，并排除首次初始化。
 
+## 2026-08-24 修复后板端交互 RTF
+
+在 `bianbu-spacemitk3picoitx` 的 `/home/spacemit/projects/MOSS-tts` 上重新执行 `./build_k3_cpp.sh`，确认 vendor ONNX Runtime、SentencePiece 和 C++ 可执行文件加载成功。测试参数为：
+
+```text
+CPUExecutionProvider
+threads=4
+CPU affinity=0-7
+MOSS_MAX_NEW_FRAMES=375
+seed=1234
+interactive mode
+```
+
+一次进程内输入中文和英文各一条，确认只初始化一次：
+
+```text
+FP32 中文：frames=15360  audio=0.32s wall=2.64661s RTF=8.27066
+FP32 英文：frames=26880  audio=0.56s wall=3.01065s RTF=5.37616
+INT8 中文：frames=1440000 audio=30.00s wall=99.0428s RTF=3.30143（达到 375 帧上限）
+INT8 英文：frames=7680   audio=0.16s wall=0.729149s RTF=4.55718
+```
+
+本次确认：
+
+- FP32、INT8 都能在交互模式完成推理并覆盖输出 WAV；
+- 每个模型进程只初始化一次 ONNX Session；
+- 当前 X100 CPU 路线的 RTF 均大于 1，尚未达到实时播放；
+- INT8 的生成长度受量化后的 `should_continue` 和随机采样影响较大，不能仅以一条短文本的结果判断稳定性；
+- 旧版 `past_valid_lengths` 读取 KV Cache 头数而不是 prompt 长度的问题已在提交 `757a677` 修复。
+
+详细命令、表格和解释见 [`README_K3_ONNX.md`](README_K3_ONNX.md) 的“2026-08-24 K3 板端交互模式复测”章节。
+
 ## 默认入口
 
 ```text

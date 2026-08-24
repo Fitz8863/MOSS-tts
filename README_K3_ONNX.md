@@ -235,7 +235,73 @@ file outputs/*.wav
 ldd cpp/build-k3/moss-tts-onnx
 ```
 
-## 9. 与 llama.cpp 目录隔离
+## 9. 2026-08-24 K3 板端交互模式复测
+
+本节记录修复 `757a677` 后在 `bianbu-spacemitk3picoitx` 板端的实际复测结果。测试目录为 `/home/spacemit/projects/MOSS-tts`，不是主机上的模拟运行。
+
+### 构建与运行条件
+
+```text
+构建：C++17 + vendor ONNX Runtime 1.24.2+spacemit.a1
+Execution Provider：CPUExecutionProvider
+线程：4
+CPU affinity：0-7（X100 CPU）
+MOSS_MAX_NEW_FRAMES：375
+seed：1234
+输出：48 kHz、双声道、PCM16 WAV
+模式：interactive；每个模型进程只出现一次 initialized_once
+```
+
+执行的核心命令：
+
+```bash
+cd ~/projects/MOSS-tts
+./build_k3_cpp.sh
+
+MOSS_MODEL_DIR="$PWD/models/MOSS-TTS-Nano-100M-ONNX" \
+MOSS_CPP_THREADS=4 MOSS_CPU_AFFINITY=0-7 MOSS_MAX_NEW_FRAMES=375 MOSS_SEED=1234 \
+./run_k3_tts.sh --interactive outputs/fp32.wav
+
+MOSS_MODEL_DIR="$PWD/models/MOSS-TTS-Nano-100M-INT8" \
+MOSS_CPP_THREADS=4 MOSS_CPU_AFFINITY=0-7 MOSS_MAX_NEW_FRAMES=375 MOSS_SEED=1234 \
+./run_k3_tts.sh --interactive outputs/int8.wav
+```
+
+每个交互进程输入同样的两条文本；第二次生成会覆盖第一次的 WAV，但两次 RTF 都会打印到终端。
+
+### 实测结果
+
+| 模型 | 输入 | 生成帧数 | 音频时长 | wall | RTF | 备注 |
+|---|---|---:|---:|---:|---:|---|
+| FP32 | `你好，这是 K3 上的中文实时性测试。` | 4 | 0.32 s | 2.64661 s | 8.27066 | 正常生成并写出 WAV |
+| FP32 | `Hello, this is an English real-time test on K3.` | 7 | 0.56 s | 3.01065 s | 5.37616 | 正常生成并写出 WAV |
+| INT8 | `你好，这是 K3 上的中文实时性测试。` | 375 | 30.00 s | 99.0428 s | 3.30143 | 达到 `MOSS_MAX_NEW_FRAMES` 上限 |
+| INT8 | `Hello, this is an English real-time test on K3.` | 2 | 0.16 s | 0.729149 s | 4.55718 | 模型提前结束 |
+
+结论：
+
+1. 修复后 FP32、INT8 均能在板端完成交互式推理，Session 只初始化一次，且 WAV 可以重复覆盖生成。
+2. 本次所有 RTF 都大于 1，当前 `CPUExecutionProvider + X100 0-7` 路线还没有达到实时播放；短音频的 RTF 会被固定的 prefill、Session 和 Codec 开销放大。
+3. INT8 在本次 30 秒上限样本的 RTF 低于 FP32，但 INT8 的 `should_continue` 对文本/随机采样非常敏感：同一进程中既可能生成到 375 帧，也可能只生成 2 帧。因此不能只用一次短文本的 RTF 判断 INT8 的稳定实时性。
+4. `MOSS_MAX_NEW_FRAMES` 只是上限，不会强制模型生成指定时长。模型的 `should_continue=0` 仍会提前结束；需要稳定输出长度时，应进一步验证 INT8 `local_fixed_sampled_frame.onnx` 的量化误差，并与 `local_greedy_frame.onnx` 做对照。
+
+### 这次修复的原因
+
+ONNX prefill KV Cache 的布局是：
+
+```text
+[batch, prefill_seq, attention_heads, head_dim]
+```
+
+旧代码误把 KV Cache 的第 3 个维度 `attention_heads=12` 当成 `past_valid_lengths`，导致 `decode_step` 得到错误的有效 Cache 长度，常见结果是只生成一个音频帧：
+
+```text
+3840 samples / 48000 Hz = 0.08 s
+```
+
+现在 C++ 直接使用 prefill 输入的真实 `rows.sequence_length` 作为初始 `past_valid_lengths`，并已在上述板端测试中重新编译和运行。
+
+## 10. 与 llama.cpp 目录隔离
 
 | 目录 | 推理后端 | 模型 | CPU/硬件结论 |
 |---|---|---|---|
