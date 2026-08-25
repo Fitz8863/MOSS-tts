@@ -1,0 +1,11 @@
+numpy
+gguf
+safetensors
+scipy
+huggingface_hub
+
+# reference-only (ONNX parity) — needed by scripts/gen_onnx_reference.py to
+# produce the upstream ONNX reconstruction for tests/test_reconstruct_parity.cpp.
+# Not required for conversion or C++ inference.
+onnxruntime
+soundfile

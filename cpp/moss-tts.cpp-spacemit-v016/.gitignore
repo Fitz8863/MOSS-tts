@@ -1,0 +1,9 @@
+/build/
+/models/
+*.gguf
+*.wav
+!tests/fixtures/*.wav
+!tests/fixtures/*.gguf
+__pycache__/
+*.pyc
+.venv/
