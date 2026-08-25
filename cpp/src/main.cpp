@@ -155,16 +155,19 @@ static std::vector<int32_t> concat(std::initializer_list<std::vector<int32_t>> p
 
 static std::vector<int32_t> prompt_codes_for_voice(const json &manifest, const std::string &requested) {
     const auto &voices = manifest["builtin_voices"];
-    const json *fallback = nullptr;
+    const json *selected = nullptr;
     for (const auto &v : voices) {
         if (!v.contains("prompt_audio_codes") || v["prompt_audio_codes"].empty()) continue;
-        if (!fallback) fallback = &v;
-        if (v.value("voice", "") == requested) fallback = &v;
-        if (v.value("voice", "") == requested) break;
+        if (v.value("voice", "") == requested) {
+            selected = &v;
+            break;
+        }
     }
-    if (!fallback) throw std::runtime_error("manifest has no builtin prompt_audio_codes");
+    if (!selected) {
+        throw std::runtime_error("voice '" + requested + "' not found in manifest builtin_voices");
+    }
     std::vector<int32_t> out;
-    for (const auto &row : (*fallback)["prompt_audio_codes"]) {
+    for (const auto &row : (*selected)["prompt_audio_codes"]) {
         for (const auto &x : row) out.push_back(x.get<int32_t>());
     }
     return out;
@@ -175,10 +178,14 @@ static std::vector<std::array<int32_t, 16>> prompt_code_rows(const json &manifes
     const json *selected = nullptr;
     for (const auto &v : voices) {
         if (!v.contains("prompt_audio_codes") || v["prompt_audio_codes"].empty()) continue;
-        if (!selected) selected = &v;
-        if (v.value("voice", "") == voice) { selected = &v; break; }
+        if (v.value("voice", "") == voice) {
+            selected = &v;
+            break;
+        }
     }
-    if (!selected) throw std::runtime_error("manifest has no builtin prompt_audio_codes");
+    if (!selected) {
+        throw std::runtime_error("voice '" + voice + "' not found in manifest builtin_voices");
+    }
     std::vector<std::array<int32_t, 16>> out;
     for (const auto &row : (*selected)["prompt_audio_codes"]) {
         if (row.size() < 16) throw std::runtime_error("prompt_audio_codes row has fewer than 16 entries");
@@ -224,23 +231,31 @@ static Ort::Value tensor_f32(Ort::MemoryInfo &mem, std::vector<float> &data, con
     return Ort::Value::CreateTensor<float>(mem, data.data(), data.size(), shape.data(), shape.size());
 }
 
+static const OrtThreadingOptions *configure_global_thread_pool(Ort::ThreadingOptions &options, int threads) {
+    options.SetGlobalIntraOpNumThreads(std::max(1, threads));
+    options.SetGlobalInterOpNumThreads(1);
+    options.SetGlobalSpinControl(1);
+    return options;
+}
+
 class Engine {
 public:
     Engine(const fs::path &model_dir, int threads)
-        : paths_(load_paths(model_dir)), env_(ORT_LOGGING_LEVEL_WARNING, "moss_tts_onnx_cpp"),
+        : paths_(load_paths(model_dir)), threading_(),
+          env_(configure_global_thread_pool(threading_, threads), ORT_LOGGING_LEVEL_WARNING, "moss_tts_onnx_cpp"),
           memory_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {
         opts_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         opts_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-        opts_.SetIntraOpNumThreads(std::max(1, threads));
-        opts_.SetInterOpNumThreads(1);
-        opts_.AddConfigEntry("session.intra_op.allow_spinning", "1");
+        // All four sessions execute sequentially in this application, so share
+        // one process-wide ORT pool instead of creating one pool per session.
+        opts_.DisablePerSessionThreads();
         prefill_ = Ort::Session(env_, paths_.prefill.c_str(), opts_);
         decode_ = Ort::Session(env_, paths_.decode_step.c_str(), opts_);
         local_fixed_ = Ort::Session(env_, paths_.local_fixed.c_str(), opts_);
         codec_ = Ort::Session(env_, paths_.codec_decode_full.c_str(), opts_);
         if (!sp_.Load(paths_.tokenizer.string()).ok()) throw std::runtime_error("failed to load SentencePiece tokenizer");
         std::cerr << "initialized_once provider=CPUExecutionProvider threads=" << threads
-                  << " model=" << paths_.manifest_path << "\n";
+                  << " thread_pool=global_shared model=" << paths_.manifest_path << "\n";
         std::cerr << "RVV note: CPU EP is used; actual RVV dispatch is determined by the board vendor ORT build and CPU ISA.\n";
         std::cerr << "model_files: prefill=" << paths_.prefill << " local_fixed=" << paths_.local_fixed
                   << " codec=" << paths_.codec_decode_full << "\n";
@@ -466,6 +481,7 @@ private:
     }
 
     ModelPaths paths_;
+    Ort::ThreadingOptions threading_;
     Ort::Env env_;
     Ort::SessionOptions opts_;
     Ort::MemoryInfo memory_;
@@ -481,7 +497,7 @@ struct Args {
     fs::path output;
     std::string text;
     std::string voice = "Junhao";
-    int threads = 4;
+    int threads = 8;
     int max_frames = 375;
     uint32_t seed = 1234;
     bool interactive = false;

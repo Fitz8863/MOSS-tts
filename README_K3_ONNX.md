@@ -59,9 +59,9 @@ readelf -A cpp/build-k3/moss-tts-onnx | grep -E 'Tag_RISCV_arch|vector' || true
   outputs/zh_fp32.wav
 
 # 显式 INT8
-./run_k3_tts.sh --model int8 \
+./run_k3_tts.sh --model int8 --voice Ava \
   'Hello, this is the C++ ONNX INT8 test on K3.' \
-  outputs/en_int8.wav
+  outputs/en_ava_int8.wav
 ```
 
 ### 常驻交互
@@ -70,28 +70,56 @@ readelf -A cpp/build-k3/moss-tts-onnx | grep -E 'Tag_RISCV_arch|vector' || true
 
 ```bash
 # FP32 常驻
-./run_k3_tts_interactive.sh --model fp32 outputs/interactive_fp32.wav
+./run_k3_tts_interactive.sh --model fp32 --voice Junhao outputs/interactive_fp32.wav
 
-# INT8 常驻
-./run_k3_tts_interactive.sh --model int8 outputs/interactive_int8.wav
+# INT8 常驻，使用更适合英文的 Ava 音色
+./run_k3_tts_interactive.sh --model int8 --voice Ava outputs/interactive_int8_ava.wav
 ```
 
 也可以使用统一入口：
 
 ```bash
-./run_k3_tts.sh --model fp32 --interactive outputs/interactive_fp32.wav
-./run_k3_tts.sh --model int8 --interactive outputs/interactive_int8.wav
+./run_k3_tts.sh --model fp32 --voice Junhao --interactive outputs/interactive_fp32.wav
+./run_k3_tts.sh --model int8 --voice Ava --interactive outputs/interactive_int8_ava.wav
 ```
 
 输入文字后回车，程序会复用同一组 ONNX Session，覆盖同一个输出 WAV，并打印本次 RTF：
 
 ```text
-initialized_once provider=CPUExecutionProvider threads=4 ...
+initialized_once provider=CPUExecutionProvider threads=8 thread_pool=global_shared ...
 输入文字后回车生成；输入 exit/quit/:q 退出。模型只初始化一次。
 frames=... audio=...s wall=...s RTF=... -> outputs/interactive.wav
 ```
 
 退出：`exit`、`quit`、`:q` 或 `Ctrl-D`。
+
+### 音色选择
+
+两个 wrapper 都支持 `--voice NAME`，它会传给 C++ ONNX 推理程序：
+
+```bash
+# 中文倾向音色
+./run_k3_tts.sh --model int8 --voice Junhao \
+  '你好，这是 Junhao 音色测试。' outputs/voice_junhao.wav
+
+# 英文倾向音色
+./run_k3_tts.sh --model int8 --voice Ava \
+  'Hello, this is an Ava voice test.' outputs/voice_ava.wav
+
+# 常驻模式：整个进程固定使用 Ava
+printf '%s\nexit\n' 'Hello, resident mode.' | \
+  ./run_k3_tts.sh --model int8 --voice Ava --interactive outputs/interactive_ava.wav
+```
+
+当前两个 ONNX manifest 都提供以下 18 个内置音色：
+
+```text
+中文倾向：Junhao, Zhiming, Weiguo, Xiaoyu, Yuewen, Lingyu
+英文倾向：Trump, Ava, Bella, Adam, Nathan
+日文倾向：Soyo, Saki, Mortis, Umiri, Mei, Anon, Arisa
+```
+
+`MOSS_VOICE=NAME` 仍然兼容；优先级为 `--voice NAME` > `MOSS_VOICE` > 默认 `Junhao`。音色名称按 manifest 严格匹配，拼写错误会直接报错，不会静默回退到默认音色。音色在进程启动时确定，常驻会话不能按输入行动态切换。音色的语言倾向不等于语言限制；中文和英文都可输入，但不同音色对另一种语言的发音自然度可能不同。
 
 ## 3. 目录结构
 
@@ -124,7 +152,7 @@ MOSS-tts/
 
 ```bash
 MOSS_CPU_AFFINITY=0-7
-MOSS_CPP_THREADS=4
+MOSS_CPP_THREADS=8
 MOSS_MAX_NEW_FRAMES=375
 MOSS_VOICE=Junhao
 MOSS_SEED=1234
@@ -134,19 +162,22 @@ MOSS_SEED=1234
 
 ```bash
 MOSS_CPU_AFFINITY=0-7 \
-MOSS_CPP_THREADS=4 \
+MOSS_CPP_THREADS=8 \
 MOSS_MAX_NEW_FRAMES=32 \
 ./run_k3_tts.sh 'X100 CPU/RVV test.' outputs/x100.wav
 ```
 
 `MOSS_CPU_AFFINITY=0-7` 是普通用户 shell 下的明确 CPU 亲和性选择，不代表使用 A100。
+当前默认是“8 个 X100 核可调度、整个 C++ 进程共享一个 8-thread ORT `intra-op` 池”。4 个 ONNX Session 不再各建一套线程池；`inter-op` 固定为 1，实际瞬时忙碌线程数仍由算子并行度决定。
 
-如需做全 CPU 亲和性实验，必须显式指定，并单独记录结果：
+如需显式测试“8 核 8 线程”，保持 affinity 为 CPU 0-7，并把 intra-op 改为 8：
 
 ```bash
-MOSS_CPU_AFFINITY=0-15 MOSS_CPP_THREADS=8 \
-  ./run_k3_tts.sh 'Affinity experiment.' outputs/all_cpu.wav
+MOSS_CPU_AFFINITY=0-7 MOSS_CPP_THREADS=8 \
+  ./run_k3_tts.sh --model int8 --interactive outputs/int8_t8.wav
 ```
+
+这仍然只使用 X100 CPU 0-7，不会使用当前 cpuset 禁止的 A100 CPU 8-15。
 
 ### RVV 证据边界
 
@@ -398,3 +429,18 @@ INT8 英文：frames=142080 audio=2.96s wall=5.50716s RTF=1.86053
 ```
 
 另外用 `MOSS_SEED=1`、`MOSS_MAX_NEW_FRAMES=100` 做了交叉验证：FP32 生成 7.12 s（RTF=2.61922），INT8 生成 5.28 s（RTF=1.9715），均不再是 0.08 s。修复后该指定文本不再固定提前结束；当前 X100 CPU 路线 RTF 仍大于 1，说明还没有达到实时播放，但 INT8 在本次长文本测试中比 FP32 更快。RTF 会受文本、采样随机数、线程和 CPU 负载影响，不能仅用一次短文本结果代表整体性能。
+
+## 2026-08-25 X100 共享线程池 4/8 线程常驻模式对比
+
+原实现把 `SetIntraOpNumThreads(N)` 配置到 4 个独立 ONNX Session，导致每个 Session 各建一套池：N=4 时约 13 个 task，N=8 时约 29 个 task。由于这 4 个 Session 在当前流水线中是顺序执行的，已改为 `Ort::Env` 进程级全局线程池，并对所有 Session 调用 `DisablePerSessionThreads()`。现在 N=4 时进程恰好观察到 4 个 task，N=8 时恰好 8 个 task，才符合这里所说的“8 核 8 线程”。
+
+板端 `/home/spacemit/projects/MOSS-tts` 使用同一中文文本、seed=1234、`MOSS_MAX_NEW_FRAMES=100`、affinity=0-7；每个模型只初始化一次并连续生成两次；测试时暂停了另一个旧常驻进程以排除负载干扰。所有推理 task 的 `Cpus_allowed_list` 均实测为 `0-7`。
+
+| 模型 | 共享 ORT intra-op | 第 1 次 RTF | 第 2 次 RTF | 平均 RTF | 8 线程相对 4 线程 |
+|---|---:|---:|---:|---:|---:|
+| FP32 ONNX | 4 | 2.53742 | 2.52702 | 2.53222 | 基准 |
+| FP32 ONNX | 8 | 2.33129 | 2.24040 | 2.28585 | 快 9.7% |
+| INT8 ONNX | 4 | 1.91039 | 1.89772 | 1.90406 | 基准 |
+| INT8 ONNX | 8 | 1.82399 | 1.76979 | 1.79689 | 快 5.6% |
+
+因此默认改为 `MOSS_CPP_THREADS=8`。这 8 个线程仍全部运行在 X100 CPU 0-7，不是 A100 CPU 8-15；RTF 仍大于 1，尚未达到实时生成。若要复测 4 线程，只需在命令前指定 `MOSS_CPP_THREADS=4`。

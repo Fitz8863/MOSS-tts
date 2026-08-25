@@ -65,14 +65,25 @@ MOSS_MAX_NEW_FRAMES=32 \
 
 ## 音色和语言
 
-内置音色：
+两个 wrapper 都支持命令行音色参数；命令行优先于环境变量：
 
 ```bash
-MOSS_VOICE=Junhao ./run_k3_tts.sh 'Junhao 中文音色。' outputs/junhao.wav
-MOSS_VOICE=Ava ./run_k3_tts.sh 'Ava English voice.' outputs/ava.wav
+./run_k3_tts.sh --model int8 --voice Junhao \
+  'Junhao 中文音色。' outputs/junhao.wav
+./run_k3_tts.sh --model int8 --voice Ava \
+  'Ava English voice.' outputs/ava.wav
+./run_k3_tts_interactive.sh --model int8 --voice Ava outputs/interactive_ava.wav
 ```
 
-SentencePiece C++ tokenizer 支持中文和英文。当前 C++ CLI 支持 manifest 内置 prompt audio codes；参考音频 encode 还未实现。
+`MOSS_VOICE=NAME` 仍然兼容，但优先级是 `--voice NAME` > `MOSS_VOICE` > 默认 `Junhao`。当前两个 manifest 的内置音色为：
+
+```text
+中文倾向：Junhao, Zhiming, Weiguo, Xiaoyu, Yuewen, Lingyu
+英文倾向：Trump, Ava, Bella, Adam, Nathan
+日文倾向：Soyo, Saki, Mortis, Umiri, Mei, Anon, Arisa
+```
+
+音色名称严格匹配 manifest；非法名称会报错，不会静默回退。音色在进程启动时确定，常驻模式不能在每一行输入时切换音色；需要切换时请退出并重新启动。SentencePiece C++ tokenizer 支持中文和英文，但音色的语言倾向不等于语言限制，实际中英文发音自然度会随音色不同而变化。当前 C++ CLI 支持 manifest 内置 prompt audio codes；参考音频 encode 还未实现。
 
 ## 验证记录
 
@@ -160,3 +171,30 @@ INT8 中文：5.36s, RTF=1.9235；英文：2.96s, RTF=1.86053
 本次短测（threads=4、affinity=0-7、max_new_frames=32）结果：FP32 RTF=3.0582，INT8 RTF=3.40015；INT8 并不必然更快，因为它是动态 MatMul INT8，实际速度取决于 CPU EP 是否有对应高效 kernel。常驻 INT8 连续两条分别为 RTF=3.58524、3.72677，且日志只出现一次 `initialized_once`。
 
 CPU 8-15 虽然被识别为 A100，但当前系统级 `Cpus_allowed_list` 只开放 0-7；`sudo` 不能突破该限制，故当前结果不能称为 A100 推理。C++ 主程序和 vendor ORT 均包含 RVV 相关属性/指令证据，但仍需 vendor ORT profile 才能把具体算子归因到 RVV。
+
+## 2026-08-25 X100 共享线程池 8 核 8 线程
+
+原 C++ 实现对 4 个 ONNX Session 分别设置 `intra-op`，因此 `threads=8` 会膨胀到约 29 个进程 task，并不等价于整个进程 8 线程。现已改用 ONNX Runtime 全局共享线程池：4 个 Session 顺序共用同一个池，实测 `threads=4` 时进程 4 个 task，`threads=8` 时进程 8 个 task；所有 task 的 `Cpus_allowed_list` 均为 `0-7`。
+
+常驻模式、相同中文文本、seed=1234、`MOSS_MAX_NEW_FRAMES=100` 的板端结果（测试时暂停另一旧常驻进程以排除负载干扰）：
+
+```text
+FP32 shared threads=4: RTF=2.53742, 2.52702, avg=2.53222
+FP32 shared threads=8: RTF=2.33129, 2.24040, avg=2.28585（快 9.7%）
+INT8 shared threads=4: RTF=1.91039, 1.89772, avg=1.90406
+INT8 shared threads=8: RTF=1.82399, 1.76979, avg=1.79689（快 5.6%）
+```
+
+因此默认值已从 `MOSS_CPP_THREADS=4` 改为 8。该配置是 X100 CPU 0-7 上的 8 核 8 线程，仍未调用系统 cpuset 禁止的 A100 CPU 8-15。运行：
+
+```bash
+cd ~/projects/MOSS-tts
+source ./setup_k3_cpp_env.sh
+./run_k3_tts.sh --model int8 --interactive outputs/interactive_int8.wav
+```
+
+如需同条件回退测试：
+
+```bash
+MOSS_CPP_THREADS=4 ./run_k3_tts.sh --model int8 --interactive outputs/int8_t4.wav
+```

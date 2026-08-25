@@ -20,11 +20,12 @@ C++17 → ONNX Runtime C++ API → CPUExecutionProvider → ONNX TTS/codec 模�
 cd ~/projects/MOSS-tts
 source ./setup_k3_cpp_env.sh
 ./build_k3_cpp.sh
-./run_k3_tts.sh '你好，这是 C++ ONNX 中文测试。' outputs/zh.wav
-./run_k3_tts_interactive.sh outputs/interactive.wav
+./run_k3_tts.sh --model int8 --voice Junhao \
+  '你好，这是 C++ ONNX 中文测试。' outputs/zh_junhao.wav
+./run_k3_tts_interactive.sh --model int8 --voice Ava outputs/interactive_ava.wav
 ```
 
-完整的部署、模型切换、内置音色、中英文、INT8、RTF、RVV 边界和板端验证说明请阅读：
+通过 `--voice NAME` 可以选择 manifest 中的内置音色；命令行参数优先于 `MOSS_VOICE` 环境变量，省略时默认使用 `Junhao`。常驻进程启动后音色固定，不能在同一次会话中按行切换，切换音色需要重新启动进程。完整的部署、模型切换、内置音色、中英文、INT8、RTF、RVV 边界和板端验证说明请阅读：
 
 - [`README_K3_ONNX.md`](README_K3_ONNX.md)
 - [`BOARD_DEPLOYMENT.md`](BOARD_DEPLOYMENT.md)

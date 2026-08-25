@@ -25,7 +25,10 @@ esac
 export MOSS_MODEL_DIR="${MOSS_MODEL_DIR:-$ROOT/models/$_moss_model_subdir}"
 unset _moss_model_subdir
 
-export MOSS_CPP_THREADS="${MOSS_CPP_THREADS:-${MOSS_CPU_THREADS:-4}}"
+# The board user session is limited to X100 CPU 0-7. The C++ engine makes
+# all four ONNX sessions share one process-wide pool, so this is a true
+# process-level 8-thread setting rather than four separate 8-thread pools.
+export MOSS_CPP_THREADS="${MOSS_CPP_THREADS:-${MOSS_CPU_THREADS:-8}}"
 export MOSS_MAX_NEW_FRAMES="${MOSS_MAX_NEW_FRAMES:-375}"
 export MOSS_VOICE="${MOSS_VOICE:-Junhao}"
 export MOSS_SEED="${MOSS_SEED:-1234}"
