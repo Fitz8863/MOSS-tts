@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat >&2 <<USAGE
 Usage:
-  $0 [--model fp32|int8] [--voice NAME] [output.wav]
+  $0 [--model fp32|int8] [--voice NAME] [--reference-audio WAV] [output.wav]
 
 The model is initialized once and then accepts one Chinese/English line per prompt.
 USAGE
@@ -14,6 +14,7 @@ USAGE
 
 MODEL_VARIANT="${MOSS_MODEL_VARIANT:-fp32}"
 VOICE_ARGS=()
+REFERENCE_ARGS=()
 POSITIONAL=()
 while (($#)); do
   case "$1" in
@@ -25,6 +26,11 @@ while (($#)); do
     --voice)
       [[ $# -ge 2 ]] || { usage; exit 2; }
       VOICE_ARGS+=(--voice "$2")
+      shift 2
+      ;;
+    --reference-audio|--prompt-audio-path|--reference-audio-path)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      REFERENCE_ARGS+=(--reference-audio "$2")
       shift 2
       ;;
     --help|-h)
@@ -44,4 +50,4 @@ while (($#)); do
 done
 [[ ${#POSITIONAL[@]} -le 1 ]] || { usage; exit 2; }
 OUTPUT="${POSITIONAL[0]:-$ROOT/outputs/interactive_${MODEL_VARIANT}.wav}"
-exec "$ROOT/run_k3_tts.sh" --model "$MODEL_VARIANT" "${VOICE_ARGS[@]}" --interactive "$OUTPUT"
+exec "$ROOT/run_k3_tts.sh" --model "$MODEL_VARIANT" "${VOICE_ARGS[@]}" "${REFERENCE_ARGS[@]}" --interactive "$OUTPUT"

@@ -43,6 +43,8 @@ source ./setup_k3_cpp_env.sh
 ```bash
 ./run_k3_tts.sh --model fp32 'FP32 ONNX test.' outputs/fp32.wav
 ./run_k3_tts.sh --model int8 'INT8 ONNX test.' outputs/int8.wav
+./run_k3_tts.sh --model int8 --reference-audio assets/audio/zh_1.wav \
+  '参考音频克隆测试。' outputs/clone_zh.wav
 ./run_k3_tts_interactive.sh --model int8 outputs/interactive_int8.wav
 ```
 
@@ -83,7 +85,19 @@ MOSS_MAX_NEW_FRAMES=32 \
 日文倾向：Soyo, Saki, Mortis, Umiri, Mei, Anon, Arisa
 ```
 
-音色名称严格匹配 manifest；非法名称会报错，不会静默回退。音色在进程启动时确定，常驻模式不能在每一行输入时切换音色；需要切换时请退出并重新启动。SentencePiece C++ tokenizer 支持中文和英文，但音色的语言倾向不等于语言限制，实际中英文发音自然度会随音色不同而变化。当前 C++ CLI 支持 manifest 内置 prompt audio codes；参考音频 encode 还未实现。
+音色名称严格匹配 manifest；非法名称会报错，不会静默回退。音色在进程启动时确定，常驻模式不能在每一行输入时切换音色；需要切换时请退出并重新启动。SentencePiece C++ tokenizer 支持中文和英文，但音色的语言倾向不等于语言限制，实际中英文发音自然度会随音色不同而变化。
+
+参考音频克隆：
+
+```bash
+./run_k3_tts.sh --model int8 --reference-audio assets/audio/zh_1.wav \
+  '你好，这是参考音频克隆测试。' outputs/clone_zh.wav
+./run_k3_tts_interactive.sh --model int8 \
+  --reference-audio assets/audio/zh_1.wav outputs/clone_interactive.wav
+```
+
+`--reference-audio` 会调用 `moss_audio_tokenizer_encode.onnx`，自动用 FFmpeg 解码并整理为 `48 kHz / 2 channels`，然后把 16 路 audio codes 放入 TTS reference slot；它优先于 `--voice`。常驻模式启动时 encode 一次并缓存，不能在同一进程中按行更换参考音频。
+
 
 ## 验证记录
 
@@ -198,3 +212,21 @@ source ./setup_k3_cpp_env.sh
 ```bash
 MOSS_CPP_THREADS=4 ./run_k3_tts.sh --model int8 --interactive outputs/int8_t4.wav
 ```
+
+
+## 2026-08-25 参考音频音色克隆验证
+
+官方 ONNX CPU README 声明支持参考音频输入。本分支已按官方实现补齐 C++ encode 路径，并在 `bianbu-spacemitk3picoitx`、`/home/spacemit/projects/MOSS-tts` 上验证。构建依赖板端 FFmpeg development modules：`libavformat`、`libavcodec`、`libavutil`、`libswresample`。
+
+测试环境：vendor ONNX Runtime `1.24.2+spacemit.a1`、`CPUExecutionProvider`、X100 CPU `0-7`、共享 ORT threads=8。`assets/audio/zh_1.wav` 是官方资源（文件内容为 FLAC，FFmpeg 可解码），C++ 读取后整理为 `48 kHz / 2 channels`。
+
+```text
+INT8 zh_1.wav: prompt_frames=98, reference_encode_wall=14.6159s
+生成: audio=4.16s, wall=11.7045s, RTF=2.81358
+输出: PCM16 WAV, 48000 Hz, 2 channels
+
+INT8 en_3.wav: prompt_frames=59, audio=4.00s, RTF=3.48017
+FP32 zh_1.wav: audio=4.32s, RTF=4.50986
+```
+
+单次内置 `--voice Ava` 回归也成功：`audio=2.56s`、`RTF=3.59077`。常驻模式同一参考音频连续输入两句时，首次 encode 后日志出现 `reference_prompt_cache=hit prompt_frames=98`；一次 `max_new_frames=80` 测试两次 RTF 为 `3.87022` 和 `1.66773`，最终重新编译后的 `max_new_frames=40` 复测为 `4.91258` 和 `4.63667`。短文本固定开销和采样生成长度会造成波动。这些是功能链路和运行时指标，不是主观音色相似度评分；尚未进行 MOS/ASV 说话人相似度测试。首次请求会额外支付约 `7~15 s` 的参考音频 encode 时间，因此常驻模式更适合复用同一参考音色。

@@ -1,4 +1,13 @@
 #include <onnxruntime_cxx_api.h>
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
+}
 #include "json.hpp"
 #include "sentencepiece_processor.h"
 #define DR_WAV_IMPLEMENTATION
@@ -14,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -50,6 +60,7 @@ struct ModelPaths {
     fs::path prefill;
     fs::path decode_step;
     fs::path local_fixed;
+    fs::path codec_encode;
     fs::path codec_decode_full;
     json manifest;
     json tts_meta;
@@ -131,6 +142,7 @@ static ModelPaths load_paths(const fs::path &requested_model_dir) {
     m.prefill = resolve_path(m.tts_dir, tf["prefill"].get<std::string>());
     m.decode_step = resolve_path(m.tts_dir, tf["decode_step"].get<std::string>());
     m.local_fixed = resolve_path(m.tts_dir, tf["local_fixed_sampled_frame"].get<std::string>());
+    m.codec_encode = resolve_path(m.codec_dir, cf["encode"].get<std::string>());
     m.codec_decode_full = resolve_path(m.codec_dir, cf["decode_full"].get<std::string>());
     const auto &tc = m.manifest["tts_config"];
     m.cfg.n_vq = tc.value("n_vq", 16);
@@ -196,6 +208,139 @@ static std::vector<std::array<int32_t, 16>> prompt_code_rows(const json &manifes
     return out;
 }
 
+static std::string av_error_string(int error) {
+    char buffer[AV_ERROR_MAX_STRING_SIZE]{};
+    av_strerror(error, buffer, sizeof(buffer));
+    return buffer;
+}
+
+static Audio read_reference_audio(const fs::path &path, int target_sample_rate, int target_channels) {
+    AVFormatContext *format = nullptr;
+    int result = avformat_open_input(&format, path.c_str(), nullptr, nullptr);
+    if (result < 0) throw std::runtime_error("failed to open reference audio " + path.string() + ": " + av_error_string(result));
+    auto close_format = [&]() { if (format) avformat_close_input(&format); };
+    result = avformat_find_stream_info(format, nullptr);
+    if (result < 0) {
+        close_format();
+        throw std::runtime_error("failed to inspect reference audio " + path.string() + ": " + av_error_string(result));
+    }
+    const int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (stream_index < 0) {
+        close_format();
+        throw std::runtime_error("reference file has no decodable audio stream: " + path.string());
+    }
+    AVStream *stream = format->streams[stream_index];
+    const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (!decoder) {
+        close_format();
+        throw std::runtime_error("no FFmpeg decoder for reference audio: " + path.string());
+    }
+    AVCodecContext *codec = avcodec_alloc_context3(decoder);
+    if (!codec) {
+        close_format();
+        throw std::runtime_error("failed to allocate reference audio decoder");
+    }
+    auto close_codec = [&]() { if (codec) avcodec_free_context(&codec); };
+    result = avcodec_parameters_to_context(codec, stream->codecpar);
+    if (result >= 0) result = avcodec_open2(codec, decoder, nullptr);
+    if (result < 0) {
+        close_codec(); close_format();
+        throw std::runtime_error("failed to initialize reference audio decoder: " + av_error_string(result));
+    }
+    if (codec->sample_rate <= 0 || codec->sample_fmt == AV_SAMPLE_FMT_NONE) {
+        close_codec(); close_format();
+        throw std::runtime_error("reference audio has invalid sample format");
+    }
+    AVChannelLayout input_layout{};
+    if (codec->ch_layout.nb_channels > 0) av_channel_layout_copy(&input_layout, &codec->ch_layout);
+    else av_channel_layout_default(&input_layout, stream->codecpar->ch_layout.nb_channels);
+    AVChannelLayout output_layout{};
+    av_channel_layout_default(&output_layout, target_channels);
+    SwrContext *swr = nullptr;
+    result = swr_alloc_set_opts2(
+        &swr, &output_layout, AV_SAMPLE_FMT_FLT, target_sample_rate,
+        &input_layout, codec->sample_fmt, codec->sample_rate, 0, nullptr);
+    av_channel_layout_uninit(&input_layout);
+    av_channel_layout_uninit(&output_layout);
+    if (result >= 0) result = swr_init(swr);
+    if (result < 0 || !swr) {
+        swr_free(&swr); close_codec(); close_format();
+        throw std::runtime_error("failed to initialize reference audio conversion: " + av_error_string(result));
+    }
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+    if (!packet || !frame) {
+        av_packet_free(&packet); av_frame_free(&frame); swr_free(&swr); close_codec(); close_format();
+        throw std::runtime_error("failed to allocate reference audio decode buffers");
+    }
+    Audio audio;
+    audio.sample_rate = target_sample_rate;
+    audio.channels = target_channels;
+    auto receive_frames = [&]() {
+        for (;;) {
+            const int receive_result = avcodec_receive_frame(codec, frame);
+            if (receive_result == AVERROR(EAGAIN) || receive_result == AVERROR_EOF) return;
+            if (receive_result < 0) throw std::runtime_error("reference audio decode failed: " + av_error_string(receive_result));
+            const int capacity = swr_get_out_samples(swr, frame->nb_samples);
+            if (capacity < 0) throw std::runtime_error("failed to size converted reference audio");
+            const size_t offset = audio.interleaved.size();
+            audio.interleaved.resize(offset + static_cast<size_t>(capacity) * target_channels);
+            uint8_t *output_data[] = {reinterpret_cast<uint8_t *>(audio.interleaved.data() + offset)};
+            const int converted = swr_convert(swr, output_data, capacity,
+                                              const_cast<const uint8_t **>(frame->extended_data), frame->nb_samples);
+            if (converted < 0) throw std::runtime_error("reference audio conversion failed: " + av_error_string(converted));
+            audio.interleaved.resize(offset + static_cast<size_t>(converted) * target_channels);
+            av_frame_unref(frame);
+        }
+    };
+    try {
+        while ((result = av_read_frame(format, packet)) >= 0) {
+            if (packet->stream_index == stream_index) {
+                result = avcodec_send_packet(codec, packet);
+                if (result < 0) throw std::runtime_error("reference audio packet decode failed: " + av_error_string(result));
+                receive_frames();
+            }
+            av_packet_unref(packet);
+        }
+        if (result != AVERROR_EOF) throw std::runtime_error("failed reading reference audio: " + av_error_string(result));
+        result = avcodec_send_packet(codec, nullptr);
+        if (result < 0) throw std::runtime_error("failed to flush reference audio decoder: " + av_error_string(result));
+        receive_frames();
+        for (;;) {
+            const int capacity = swr_get_out_samples(swr, 0);
+            if (capacity <= 0) break;
+            const size_t offset = audio.interleaved.size();
+            audio.interleaved.resize(offset + static_cast<size_t>(capacity) * target_channels);
+            uint8_t *output_data[] = {reinterpret_cast<uint8_t *>(audio.interleaved.data() + offset)};
+            const int converted = swr_convert(swr, output_data, capacity, nullptr, 0);
+            if (converted < 0) throw std::runtime_error("failed to flush reference audio conversion: " + av_error_string(converted));
+            audio.interleaved.resize(offset + static_cast<size_t>(converted) * target_channels);
+            if (converted == 0) break;
+        }
+    } catch (...) {
+        av_packet_free(&packet); av_frame_free(&frame); swr_free(&swr); close_codec(); close_format();
+        throw;
+    }
+    av_packet_free(&packet);
+    av_frame_free(&frame);
+    swr_free(&swr);
+    close_codec();
+    close_format();
+    audio.frames = static_cast<int64_t>(audio.interleaved.size() / target_channels);
+    if (audio.frames <= 0) throw std::runtime_error("reference audio is empty: " + path.string());
+    return audio;
+}
+
+static std::vector<float> interleaved_to_planar(const Audio &audio) {
+    std::vector<float> planar(static_cast<size_t>(audio.frames) * audio.channels);
+    for (int c = 0; c < audio.channels; ++c) {
+        for (int64_t t = 0; t < audio.frames; ++t) {
+            planar[static_cast<size_t>(c) * audio.frames + t] = audio.interleaved[static_cast<size_t>(t) * audio.channels + c];
+        }
+    }
+    return planar;
+}
+
 static void write_wav(const fs::path &path, const Audio &audio) {
     fs::create_directories(path.parent_path());
     drwav_data_format fmt{};
@@ -258,15 +403,32 @@ public:
                   << " thread_pool=global_shared model=" << paths_.manifest_path << "\n";
         std::cerr << "RVV note: CPU EP is used; actual RVV dispatch is determined by the board vendor ORT build and CPU ISA.\n";
         std::cerr << "model_files: prefill=" << paths_.prefill << " local_fixed=" << paths_.local_fixed
-                  << " codec=" << paths_.codec_decode_full << "\n";
+                  << " codec_encode=" << paths_.codec_encode << " codec_decode=" << paths_.codec_decode_full << "\n";
     }
 
     const Config &config() const { return paths_.cfg; }
 
-    Audio synthesize(const std::string &text, const std::string &voice, int max_frames, uint32_t seed) {
+    void prepare_reference_audio(const fs::path &reference_audio) {
+        if (reference_audio.empty()) return;
+        const fs::path resolved = fs::canonical(reference_audio);
+        if (resolved != cached_reference_audio_) {
+            cached_reference_codes_ = encode_reference_audio(resolved);
+            cached_reference_audio_ = resolved;
+        }
+    }
+
+    Audio synthesize(const std::string &text, const std::string &voice, const fs::path &reference_audio, int max_frames, uint32_t seed) {
         std::vector<int> token_ids;
         if (!sp_.Encode(text, &token_ids).ok() || token_ids.empty()) throw std::runtime_error("SentencePiece tokenization failed");
-        InputRows rows = build_rows(token_ids, voice);
+        std::vector<std::array<int32_t, 16>> prompt_codes;
+        if (reference_audio.empty()) {
+            prompt_codes = prompt_code_rows(paths_.manifest, voice);
+        } else {
+            prepare_reference_audio(reference_audio);
+            std::cerr << "reference_prompt_cache=hit prompt_frames=" << cached_reference_codes_.size() << "\n";
+            prompt_codes = cached_reference_codes_;
+        }
+        InputRows rows = build_rows(token_ids, prompt_codes);
         std::vector<Ort::Value> prefill_outputs = run_prefill(rows);
         std::vector<std::array<int32_t, 16>> frames = run_decode(prefill_outputs, rows.sequence_length, max_frames, seed);
         if (frames.empty()) throw std::runtime_error("model generated no audio frames");
@@ -274,7 +436,37 @@ public:
     }
 
 private:
-    InputRows build_rows(const std::vector<int> &text_ids, const std::string &voice) {
+    std::vector<std::array<int32_t, 16>> encode_reference_audio(const fs::path &path) {
+        const auto started = std::chrono::steady_clock::now();
+        if (!codec_encode_) codec_encode_ = std::make_unique<Ort::Session>(env_, paths_.codec_encode.c_str(), opts_);
+        const Audio prepared = read_reference_audio(path, paths_.cfg.sample_rate, paths_.cfg.channels);
+        std::vector<float> waveform = interleaved_to_planar(prepared);
+        std::vector<int32_t> lengths{static_cast<int32_t>(prepared.frames)};
+        std::array<Ort::Value, 2> inputs = {
+            tensor_f32(memory_, waveform, {1, prepared.channels, prepared.frames}),
+            tensor_i32(memory_, lengths, {1})};
+        const char *names[] = {"waveform", "input_lengths"};
+        const char *outs[] = {"audio_codes", "audio_code_lengths"};
+        auto result = codec_encode_->Run(Ort::RunOptions{nullptr}, names, inputs.data(), inputs.size(), outs, 2);
+        auto shape = result[0].GetTensorTypeAndShapeInfo().GetShape();
+        if (shape.size() != 3 || shape[0] != 1 || shape[2] != paths_.cfg.n_vq) {
+            throw std::runtime_error("unexpected codec encode audio_codes shape");
+        }
+        const int32_t code_length = result[1].GetTensorData<int32_t>()[0];
+        if (code_length <= 0 || code_length > shape[1]) throw std::runtime_error("invalid codec encode audio_code_lengths");
+        const int32_t *codes = result[0].GetTensorData<int32_t>();
+        std::vector<std::array<int32_t, 16>> rows(static_cast<size_t>(code_length));
+        for (int32_t t = 0; t < code_length; ++t) {
+            for (int q = 0; q < paths_.cfg.n_vq; ++q) rows[t][q] = codes[static_cast<size_t>(t) * paths_.cfg.n_vq + q];
+        }
+        const double wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::cerr << "reference_audio=" << path << " prepared=" << prepared.sample_rate << "Hz/" << prepared.channels
+                  << "ch samples=" << prepared.frames << " prompt_frames=" << rows.size()
+                  << " reference_encode_wall=" << wall_s << "s\n";
+        return rows;
+    }
+
+    InputRows build_rows(const std::vector<int> &text_ids, const std::vector<std::array<int32_t, 16>> &prompt_codes) {
         const int w = paths_.cfg.n_vq + 1;
         const auto &pt = paths_.manifest["prompt_templates"];
         std::vector<int32_t> prefix = json_int_array(pt["user_prompt_prefix_token_ids"]);
@@ -295,7 +487,7 @@ private:
             }
         };
         add_text(prefix);
-        for (const auto &row : prompt_code_rows(paths_.manifest, voice)) {
+        for (const auto &row : prompt_codes) {
             flat.push_back(paths_.cfg.audio_user_slot_token_id);
             for (int c = 0; c < paths_.cfg.n_vq; ++c) flat.push_back(row[c]);
         }
@@ -488,8 +680,11 @@ private:
     Ort::Session prefill_{nullptr};
     Ort::Session decode_{nullptr};
     Ort::Session local_fixed_{nullptr};
+    std::unique_ptr<Ort::Session> codec_encode_;
     Ort::Session codec_{nullptr};
     sentencepiece::SentencePieceProcessor sp_;
+    fs::path cached_reference_audio_;
+    std::vector<std::array<int32_t, 16>> cached_reference_codes_;
 };
 
 struct Args {
@@ -497,6 +692,7 @@ struct Args {
     fs::path output;
     std::string text;
     std::string voice = "Junhao";
+    fs::path reference_audio;
     int threads = 8;
     int max_frames = 375;
     uint32_t seed = 1234;
@@ -504,7 +700,7 @@ struct Args {
 };
 
 static void usage(const char *prog) {
-    std::cerr << "Usage: " << prog << " [--model-dir DIR] [--threads N] [--max-new-frames N] [--voice NAME] [--seed N] [--interactive OUTPUT] [TEXT OUTPUT]\n";
+    std::cerr << "Usage: " << prog << " [--model-dir DIR] [--threads N] [--max-new-frames N] [--voice NAME] [--reference-audio WAV] [--seed N] [--interactive OUTPUT] [TEXT OUTPUT]\n";
 }
 
 static Args parse_args(int argc, char **argv, const fs::path &default_model_dir) {
@@ -517,6 +713,7 @@ static Args parse_args(int argc, char **argv, const fs::path &default_model_dir)
         else if (x == "--threads") a.threads = std::stoi(need("--threads"));
         else if (x == "--max-new-frames") a.max_frames = std::stoi(need("--max-new-frames"));
         else if (x == "--voice") a.voice = need("--voice");
+        else if (x == "--reference-audio" || x == "--prompt-audio-path" || x == "--reference-audio-path") a.reference_audio = need(x.c_str());
         else if (x == "--seed") a.seed = static_cast<uint32_t>(std::stoul(need("--seed")));
         else if (x == "--interactive") { a.interactive = true; a.output = need("--interactive"); }
         else if (x == "--help" || x == "-h") { usage(argv[0]); std::exit(0); }
@@ -531,9 +728,10 @@ static Args parse_args(int argc, char **argv, const fs::path &default_model_dir)
 
 static int run(const Args &a) {
     Engine engine(a.model_dir, a.threads);
+    engine.prepare_reference_audio(a.reference_audio);
     auto synth_one = [&](const std::string &text) {
         const auto t0 = std::chrono::steady_clock::now();
-        Audio audio = engine.synthesize(text, a.voice, a.max_frames, a.seed);
+        Audio audio = engine.synthesize(text, a.voice, a.reference_audio, a.max_frames, a.seed);
         const auto t1 = std::chrono::steady_clock::now();
         write_wav(a.output, audio);
         const double audio_s = audio.frames / static_cast<double>(audio.sample_rate);
@@ -541,7 +739,10 @@ static int run(const Args &a) {
         std::cout << "frames=" << audio.frames << " audio=" << audio_s << "s wall=" << wall_s << "s RTF=" << (audio_s > 0 ? wall_s / audio_s : 0.0) << " -> " << a.output << "\n" << std::flush;
     };
     if (a.interactive) {
-        std::cout << "C++ ONNX Runtime interactive mode; output=" << a.output << " voice=" << a.voice << "\n";
+        std::cout << "C++ ONNX Runtime interactive mode; output=" << a.output;
+        if (a.reference_audio.empty()) std::cout << " voice=" << a.voice;
+        else std::cout << " reference_audio=" << a.reference_audio;
+        std::cout << "\n";
         std::cout << "输入文字后回车生成；输入 exit/quit/:q 退出。模型只初始化一次。\n" << std::flush;
         std::string text;
         while (std::getline(std::cin, text)) {

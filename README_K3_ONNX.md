@@ -23,7 +23,7 @@ GGUF、SpaceMIT ggml、llama.cpp 和 A100/IME2 路线位于相邻目录：
 | 常驻交互 | 支持；Session 只初始化一次，输入文本后回车生成并覆盖 WAV |
 | 音色 | 支持 manifest 内置命名音色 |
 | 中文/英文 | 使用 SentencePiece C++ API，中文和英文走同一套 ONNX 图 |
-| 参考音频克隆 | 当前 C++ CLI 尚未接入 codec encode，不作为当前功能承诺 |
+| 参考音频克隆 | 支持；参考音频经 codec encode 后作为 TTS prompt，覆盖 `--voice` |
 
 ## 2. 快速开始
 
@@ -41,7 +41,9 @@ source ./setup_k3_cpp_env.sh
 /usr/include/onnxruntime_cxx_api.h
 /usr/lib/python3.14/dist-packages/onnxruntime/capi/libonnxruntime.so.1.24.2+spacemit.a1
 ~/projects/MOSS-tts/board_root_spm/usr/lib/riscv64-linux-gnu/libsentencepiece.so.0
+/usr/lib/riscv64-linux-gnu/{libavformat,libavcodec,libavutil,libswresample}.so
 ```
+构建还需要板端 FFmpeg development headers/pkg-config modules：`libavformat`、`libavcodec`、`libavutil`、`libswresample`。
 
 检查：
 
@@ -63,6 +65,30 @@ readelf -A cpp/build-k3/moss-tts-onnx | grep -E 'Tag_RISCV_arch|vector' || true
   'Hello, this is the C++ ONNX INT8 test on K3.' \
   outputs/en_ava_int8.wav
 ```
+
+### 参考音频音色克隆
+
+官方 ONNX CPU 版本的音色克隆流程是：参考音频 → `moss_audio_tokenizer_encode.onnx` → 16 路 prompt audio codes → TTS prefill。当前 K3 C++ wrapper 已接入同一流程。`--reference-audio` 会覆盖 `--voice`；兼容别名为 `--prompt-audio-path` 和 `--reference-audio-path`。
+
+```bash
+# 单次：使用官方仓库中的中文参考音频
+./run_k3_tts.sh --model int8 \
+  --reference-audio assets/audio/zh_1.wav \
+  '你好，这是参考音频音色克隆测试。' outputs/clone_zh_int8.wav
+
+# 单次：英文参考音频
+./run_k3_tts.sh --model int8 \
+  --reference-audio assets/audio/en_3.wav \
+  'Hello, this is a reference voice cloning test.' outputs/clone_en_int8.wav
+
+# 常驻：启动时 encode 一次，后续每行复用同一组 prompt codes
+./run_k3_tts_interactive.sh --model int8 \
+  --reference-audio assets/audio/zh_1.wav outputs/clone_interactive.wav
+```
+
+参考音频由板端 FFmpeg 解码，并自动整理为 codec 要求的 `48 kHz / 2 channels / float32`；因此文件扩展名不是硬性限制，板端安装的 FFmpeg 能解码的音频容器/编码均可尝试。模型原生输出仍为 `48 kHz stereo PCM16 WAV`。常驻模式启动时只 encode 一次，后续输入命中 prompt cache；不能在同一进程中按行切换参考音频。
+
+如果同时传入 `--voice Ava --reference-audio reference.wav`，以参考音频为准；`--voice` 只作为日志中的备用名称。
 
 ### 常驻交互
 
@@ -203,15 +229,18 @@ MOSS_VOICE=Ava \
 
 C++ 程序从 manifest 读取对应的 `prompt_audio_codes`。这是命名 prompt 音色切换，不是重新训练模型。
 
-当前版本不包含参考音频到 codec audio codes 的 C++ encode 流程。如果需要该能力，应后续增加：
+当前 C++ 已包含参考音频 encode 流程：
 
 ```text
-WAV 读取
-→ 采样率/通道整理
+参考音频
+→ FFmpeg 解码与 48 kHz/2 声道整理
 → moss_audio_tokenizer_encode.onnx
-→ prompt audio codes
+→ prompt audio codes（16 codebooks）
 → C++ TTS prefill
+→ codec decode
 ```
+
+内置 `--voice` 仍然直接读取 manifest 的 `prompt_audio_codes`，不需要 encode；参考音频模式则优先使用运行时 encode 的 codes。
 
 ## 6. FP32 / INT8 模型切换
 
@@ -522,3 +551,31 @@ num_quantizers=16
 7. **需要更大幅提升时**：优先考虑更小/蒸馏的 TTS 模型、静态量化或融合算子导出，以及真正低采样率/单声道 codec，而不是只做输出后处理。
 
 可选的 `--sample-rate 24000`、`--mono` 若后续加入，应明确定位为输出格式/传输优化，默认仍保留原生 48 kHz stereo，并用模型原生音频时长诚实计算推理 RTF。
+
+
+## 2026-08-25 参考音频音色克隆板端测试
+
+官方 `OpenMOSS/MOSS-TTS-Nano` README 的 ONNX CPU 章节提供参考音频示例；本仓库保留了官方 `assets/audio/zh_1.wav`、`assets/audio/en_3.wav` 等资源。当前开发板为 `bianbu-spacemitk3picoitx`，路径 `/home/spacemit/projects/MOSS-tts`，使用 vendor ONNX Runtime `1.24.2+spacemit.a1`、`CPUExecutionProvider`、X100 affinity `0-7`、8 个共享 ORT 线程。测试前重新运行 `./build_k3_cpp.sh`，C++ 编译和动态库加载均成功。
+
+实现验证命令：
+
+```bash
+./run_k3_tts.sh --model int8 \
+  --reference-audio assets/audio/zh_1.wav \
+  '你好，这是最终版本的参考音频克隆测试。' outputs/clone_zh1_int8_final.wav
+```
+
+实测日志要点：
+
+```text
+reference_audio=.../assets/audio/zh_1.wav
+prepared=48000Hz/2ch samples=379200 prompt_frames=98
+reference_encode_wall=14.6159s
+frames=199680 audio=4.16s wall=11.7045s RTF=2.81358
+```
+
+输出文件检查结果：`48 kHz`、`2 channels`、`PCM16 WAV`、时长 `4.16 s`。另外使用 `assets/audio/en_3.wav` 做英文克隆，encode 输出 `prompt_frames=59`，最终生成 `4.00 s` 音频，`RTF=3.48017`。内置音色回归测试 `--voice Ava` 也成功，输出 `2.56 s`，`RTF=3.59077`。
+
+常驻模式验证使用同一个 `zh_1.wav` 输入两句文本：首次 encode 后日志显示 `reference_prompt_cache=hit prompt_frames=98`，证明常驻会话会复用参考音频 codes，而不会每句重复 encode。一次 `MOSS_MAX_NEW_FRAMES=80` 测试的两次 RTF 为 `3.87022` 与 `1.66773`；最终重新编译后的 `MOSS_MAX_NEW_FRAMES=40` 复测为 `4.91258` 与 `4.63667`（短文本固定开销和采样生成长度会造成波动，不作为稳定长文本实时性结论）。FP32 单次参考音频测试也成功：`4.32 s` 音频、`RTF=4.50986`。
+
+当前结论：K3 C++ ONNX 路径已经支持参考音频音色克隆；输入音频先由板端 FFmpeg 解码并统一为 `48 kHz / 2 channels`，再调用 `moss_audio_tokenizer_encode.onnx`。这证明了功能链路和输出文件正确，不等同于主观音色相似度评测；当前测试没有做说话人相似度 MOS/ASV 评分。参考音频 encode 本身约占首次请求额外的 `7~15 s`，因此常驻模式更适合复用同一参考音色。

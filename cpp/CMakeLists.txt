@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(moss_tts_onnx_cpp LANGUAGES CXX)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
+pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
@@ -47,6 +53,10 @@ target_include_directories(moss-tts-onnx PRIVATE
 target_link_libraries(moss-tts-onnx PRIVATE
   ${ONNXRUNTIME_LIBRARY}
   ${SENTENCEPIECE_LIBRARY}
+  PkgConfig::AVFORMAT
+  PkgConfig::AVCODEC
+  PkgConfig::SWRESAMPLE
+  PkgConfig::AVUTIL
   dl pthread
 )
 target_compile_options(moss-tts-onnx PRIVATE -O3 -fno-math-errno -fopenmp)
