@@ -38,6 +38,14 @@ source ./setup_k3_cpp_env.sh
 
 ## 模型
 
+脚本默认选择 FP32，也可以显式选择 ONNX INT8；本目录不使用 GGUF：
+
+```bash
+./run_k3_tts.sh --model fp32 'FP32 ONNX test.' outputs/fp32.wav
+./run_k3_tts.sh --model int8 'INT8 ONNX test.' outputs/int8.wav
+./run_k3_tts_interactive.sh --model int8 outputs/interactive_int8.wav
+```
+
 默认模型目录：
 
 ```text
@@ -143,3 +151,12 @@ INT8 中文：5.36s, RTF=1.9235；英文：2.96s, RTF=1.86053
 ```
 
 另外以 seed=1、max_new_frames=100 交叉验证：FP32 生成 7.12s（RTF=2.61922），INT8 生成 5.28s（RTF=1.9715）。当前结论：短音频的 C++ decode 输入错误已修复；FP32 和 INT8 都能生成与文本长度相匹配的多秒音频。X100 CPU 路线当前 RTF 仍约为 1.86～2.62，尚未达到实时（RTF<1）。
+
+
+## 2026-08-25 当前恢复状态
+
+当前板端 `/home/spacemit/projects/MOSS-tts` 已恢复为 C++ + ONNX Runtime 路线，入口支持 `--model fp32|int8`；GGUF 目录不参与本路线。板端已重新编译并完成 FP32、INT8 单次推理和 INT8 常驻两次输入验证。
+
+本次短测（threads=4、affinity=0-7、max_new_frames=32）结果：FP32 RTF=3.0582，INT8 RTF=3.40015；INT8 并不必然更快，因为它是动态 MatMul INT8，实际速度取决于 CPU EP 是否有对应高效 kernel。常驻 INT8 连续两条分别为 RTF=3.58524、3.72677，且日志只出现一次 `initialized_once`。
+
+CPU 8-15 虽然被识别为 A100，但当前系统级 `Cpus_allowed_list` 只开放 0-7；`sudo` 不能突破该限制，故当前结果不能称为 A100 推理。C++ 主程序和 vendor ORT 均包含 RVV 相关属性/指令证据，但仍需 vendor ORT profile 才能把具体算子归因到 RVV。

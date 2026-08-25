@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
 option(MOSS_ENABLE_RVV "Build the C++ host with RISC-V Vector ISA enabled" ON)
 set(MOSS_RVV_ARCH "rv64gcv" CACHE STRING "RISC-V -march value for the C++ host")
+set(MOSS_RVV_TUNE "spacemit-x100" CACHE STRING "RISC-V -mtune value for the C++ host")
 
 # These are cache variables on purpose: the board has both a generic system
 # ORT (1.23) and the vendor board ORT (1.24.2+spacemit).  The build
@@ -55,7 +56,7 @@ target_compile_options(moss-tts-onnx PRIVATE -O3 -fno-math-errno -fopenmp)
 # Enable RVV code generation on the board, but do not claim NPU/A100 use from
 # this flag alone.  Actual kernel dispatch is a property of the ORT binary.
 if(MOSS_ENABLE_RVV AND CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|riscv")
-  target_compile_options(moss-tts-onnx PRIVATE -march=${MOSS_RVV_ARCH} -mabi=lp64d)
+  target_compile_options(moss-tts-onnx PRIVATE -march=${MOSS_RVV_ARCH} -mtune=${MOSS_RVV_TUNE} -mabi=lp64d)
   target_compile_definitions(moss-tts-onnx PRIVATE MOSS_CPP_RVV_BUILD=1)
 else()
   target_compile_definitions(moss-tts-onnx PRIVATE MOSS_CPP_RVV_BUILD=0)

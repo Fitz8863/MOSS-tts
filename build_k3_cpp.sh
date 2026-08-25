@@ -18,6 +18,7 @@ cmake -S "$ROOT/cpp" -B "$BUILD_DIR" \
   -DONNXRUNTIME_LIBRARY="$ORT_LIB" \
   -DSENTENCEPIECE_LIBRARY="$SPM_LIB" \
   -DMOSS_ENABLE_RVV="${MOSS_ENABLE_RVV:-ON}" \
-  -DMOSS_RVV_ARCH="${MOSS_RVV_ARCH:-rv64gcv}"
+  -DMOSS_RVV_ARCH="${MOSS_RVV_ARCH:-rv64gcv}" \
+  -DMOSS_RVV_TUNE="${MOSS_RVV_TUNE:-spacemit-x100}"
 cmake --build "$BUILD_DIR" -j"${MOSS_BUILD_JOBS:-2}"
 ldd "$BUILD_DIR/moss-tts-onnx" | grep -E 'onnxruntime|sentencepiece|not found' || true

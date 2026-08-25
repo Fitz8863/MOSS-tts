@@ -53,19 +53,34 @@ readelf -A cpp/build-k3/moss-tts-onnx | grep -E 'Tag_RISCV_arch|vector' || true
 ### 单次中文/英文推理
 
 ```bash
-./run_k3_tts.sh \
+# 默认 FP32
+./run_k3_tts.sh --model fp32 \
   '你好，这是 K3 上的 C++ ONNX 中文测试。' \
-  outputs/zh.wav
+  outputs/zh_fp32.wav
 
-./run_k3_tts.sh \
-  'Hello, this is the C++ ONNX test on K3.' \
-  outputs/en.wav
+# 显式 INT8
+./run_k3_tts.sh --model int8 \
+  'Hello, this is the C++ ONNX INT8 test on K3.' \
+  outputs/en_int8.wav
 ```
 
 ### 常驻交互
 
+默认使用 FP32；用 `--model int8` 选择社区动态 MatMul INT8 ONNX。模型进程启动时只初始化一次 Session，后续输入文字后回车即可复用。
+
 ```bash
-./run_k3_tts_interactive.sh outputs/interactive.wav
+# FP32 常驻
+./run_k3_tts_interactive.sh --model fp32 outputs/interactive_fp32.wav
+
+# INT8 常驻
+./run_k3_tts_interactive.sh --model int8 outputs/interactive_int8.wav
+```
+
+也可以使用统一入口：
+
+```bash
+./run_k3_tts.sh --model fp32 --interactive outputs/interactive_fp32.wav
+./run_k3_tts.sh --model int8 --interactive outputs/interactive_int8.wav
 ```
 
 输入文字后回车，程序会复用同一组 ONNX Session，覆盖同一个输出 WAV，并打印本次 RTF：
@@ -309,6 +324,30 @@ ONNX prefill KV Cache 的布局是：
 | `MOSS-tts-llamacpp` | C++ SpaceMIT ggml/llama.cpp | GGUF | A100/IME2、repack 和 GGUF RTF 另行记录 |
 
 两边的脚本、模型格式、构建目录和 README 不应互相覆盖。
+
+## 2026-08-25 恢复为 C++ ONNX、显式 FP32/INT8 选择与 RVV 复测
+
+本次将入口统一为 C++ ONNX，不再从本目录选择 GGUF。GGUF/llama.cpp 仍是相邻目录的独立路线。新增：
+
+- `--model fp32|int8`：脚本直接选择 `MOSS-TTS-Nano-100M-ONNX` 或 `MOSS-TTS-Nano-100M-INT8`；
+- 常驻模式仍由同一个 C++ 进程持有四个 ONNX Session，连续输入只做推理和 WAV 覆盖；
+- C++ 主程序编译参数增加 `-mtune=spacemit-x100`，同时保持 `-march=rv64gcv`；
+- 不把上述编译参数误报为 A100/NPU 加速，实际 ONNX 算子是否命中 RVV 仍由 vendor ORT kernel/profile 决定。
+
+板端实测：`bianbu-spacemitk3picoitx`，目录 `/home/spacemit/projects/MOSS-tts`，vendor ORT `1.24.2+spacemit.a1`，`CPUExecutionProvider`，threads=4，affinity=0-7，`MOSS_MAX_NEW_FRAMES=32`。
+
+| 模型 | 输出 | wall | RTF | 备注 |
+|---|---:|---:|---:|---|
+| FP32 ONNX | 2.56 s | 7.82899 s | 3.0582 | 单次进程，包含初始化 |
+| INT8 ONNX | 2.56 s | 8.70440 s | 3.40015 | 单次进程，包含初始化 |
+| INT8 常驻第 1 条 | 1.60 s | 5.73639 s | 3.58524 | 同一进程，初始化已完成 |
+| INT8 常驻第 2 条 | 2.56 s | 9.54053 s | 3.72677 | 同一进程，复用 Session |
+
+这组短帧测试说明：当前这份社区 INT8 ONNX 是动态 `MatMul` 权重量化（图中包含 `DynamicQuantizeLinear` + `MatMulInteger`），并不保证在当前 vendor CPU EP 上更快；本次 32 帧短测 INT8 反而比 FP32 慢。短音频还会被 prefill、首次页表/cache 和 codec 固定开销放大，不能据此断言长音频结论。
+
+板端 CPU 约束也已实际核对：CPU 0-7 是 X100，CPU 8-15 是 A100；但当前系统 PID 1、sshd 和用户 session 的 `Cpus_allowed_list` 都是 `0-7`，即使 `sudo` 也无法把进程迁移到 8-15，`taskset -c 8-15` 会返回 `Invalid argument`。因此本次 RTF 仍是 X100 CPU 路线，不是 A100 算力核结果。
+
+板端 ELF 和 vendor ORT 的 `readelf -A` 均带 RISC-V vector 属性；vendor ORT 反汇编可见 `vsetvli`，但这只证明二进制包含 RVV 代码，不能替代算子级运行时 profile。
 
 ## 2026-08-25 修复指定中文文本仅生成 0.08 秒
 
