@@ -19,6 +19,6 @@ source ./setup_k3_cpp_env.sh
 ./run_k3_tts_interactive.sh --model int8 --voice Ava outputs/interactive_ava.wav
 ```
 
-The `--voice NAME` option selects a built-in manifest voice. It overrides `MOSS_VOICE`; omitting it keeps the default `Junhao`. The selected voice is fixed when a resident process starts, so changing voice requires starting another process. For the complete deployment, model, voice, INT8, RTF, RVV and board validation notes, read [`README_K3_ONNX.md`](README_K3_ONNX.md) and [`BOARD_DEPLOYMENT.md`](BOARD_DEPLOYMENT.md).
+The `--voice NAME` option selects a built-in manifest voice. It overrides `MOSS_VOICE`; omitting it keeps the default `Junhao`. The selected voice is fixed when a resident process starts, so changing voice requires starting another process. For the complete deployment, model, voice, INT8, RTF, RVV and board validation notes, read [`README_K3_ONNX.md`](README_K3_ONNX.md) and [`BOARD_DEPLOYMENT.md`](BOARD_DEPLOYMENT.md). The latest fixed-text INT8 benchmark reaches about RTF 1.66-1.71 with 8 X100 threads; its decode loop and codec account for roughly 71% and 24% of wall time. Post-processing to 24 kHz mono reduces output bandwidth, not the native 48 kHz stereo model compute.
 
 Large ONNX model files and board-only runtime libraries are provisioned separately and ignored by Git; see `.gitignore`.

@@ -27,6 +27,8 @@ source ./setup_k3_cpp_env.sh
 
 通过 `--voice NAME` 可以选择 manifest 中的内置音色；命令行参数优先于 `MOSS_VOICE` 环境变量，省略时默认使用 `Junhao`。常驻进程启动后音色固定，不能在同一次会话中按行切换，切换音色需要重新启动进程。完整的部署、模型切换、内置音色、中英文、INT8、RTF、RVV 边界和板端验证说明请阅读：
 
+最新固定文本 INT8 测试在 X100 8 线程下约为 `RTF=1.66~1.71`；逐帧 decode loop 和 codec 约占 wall 的 71% 与 24%。把最终 WAV 后处理为 24 kHz 单声道只能降低文件和传输带宽，不会减少模型内部原生 48 kHz 双声道计算。详细测试表和优化结论见 `README_K3_ONNX.md` 最后一节。
+
 - [`README_K3_ONNX.md`](README_K3_ONNX.md)
 - [`BOARD_DEPLOYMENT.md`](BOARD_DEPLOYMENT.md)
 

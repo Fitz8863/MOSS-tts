@@ -444,3 +444,81 @@ INT8 英文：frames=142080 audio=2.96s wall=5.50716s RTF=1.86053
 | INT8 ONNX | 8 | 1.82399 | 1.76979 | 1.79689 | 快 5.6% |
 
 因此默认改为 `MOSS_CPP_THREADS=8`。这 8 个线程仍全部运行在 X100 CPU 0-7，不是 A100 CPU 8-15；RTF 仍大于 1，尚未达到实时生成。若要复测 4 线程，只需在命令前指定 `MOSS_CPP_THREADS=4`。
+
+## 2026-08-25 INT8 实时性专项测试与优化结论
+
+本节补充记录固定英文文本的线程缩放、单次阶段耗时，以及降低采样率/改为单声道是否能改善模型 RTF 的结论。测试仍在板端 `/home/spacemit/projects/MOSS-tts` 完成，使用当前 C++ 常驻路径、INT8 ONNX、`Ava` 音色、固定 seed、CPU affinity `0-7`；同一进程连续生成两次，以避开 Session 初始化时间对结果的干扰。
+
+固定测试文本：
+
+```text
+Hello, this is a fixed INT8 realtime benchmark sentence.
+```
+
+### 线程缩放结果
+
+| `MOSS_CPP_THREADS` | 第 1 次 RTF | 第 2 次 RTF | 平均 RTF |
+|---:|---:|---:|---:|
+| 1 | 4.35031 | 4.34643 | 4.34837 |
+| 2 | 2.72564 | 2.71242 | 2.71903 |
+| 4 | 1.86968 | 1.85276 | 1.86122 |
+| 8 | 1.69488 | 1.65704 | 1.67596 |
+
+当前已测配置中 8 线程最快，因此保持默认 `MOSS_CPP_THREADS=8`。从 4 线程增加到 8 线程只有约 10% 的平均改善，说明当前瓶颈已经不能只靠继续增加 ORT 线程解决；而且系统 cpuset 只允许 CPU `0-7`，以上结果均为 X100 CPU 路线，不是 A100 CPU `8-15`。
+
+### 单次阶段耗时
+
+另一条固定英文输入的 8 线程常驻推理结果为：
+
+```text
+text: Hello, this is a timing benchmark sentence for INT8.
+frames: 58
+output audio: 4.64 s
+wall: 7.91688 s
+RTF: 1.70622
+```
+
+C++ 临时计时点得到：
+
+| 阶段 | 耗时 | 约占总 wall |
+|---|---:|---:|
+| SentencePiece tokenize | 0.083 ms | <0.01% |
+| prompt/build rows | 0.051 ms | <0.01% |
+| TTS prefill | 394.464 ms | 5.0% |
+| 逐帧 local sampler + global decode loop | 5618.65 ms | 71.0% |
+| codec `decode_full` | 1903.45 ms | 24.0% |
+
+因此主要优化目标是逐帧 decode loop，其次是 codec；tokenizer、prompt 构造和 WAV 写盘不是主要瓶颈。若要把当前约 `RTF=1.66~1.71` 降到 1，需要总 wall 至少再降低约 40%，仅调整输出文件格式不够。
+
+### 48 kHz 双声道、24 kHz 单声道与 RTF
+
+当前 codec 配置来自 `models/MOSS-Audio-Tokenizer-Nano-ONNX/codec_browser_onnx_meta.json`：
+
+```text
+sample_rate=48000
+channels=2
+downsample_rate=3840
+num_quantizers=16
+```
+
+所以每个 TTS 音频码帧对应：
+
+```text
+3840 / 48000 = 0.08 s
+```
+
+当前 `moss_audio_tokenizer_decode_full.onnx` 会先计算完整的 48 kHz 双声道波形。推理完成后再下采样为 24 kHz、或把双声道混为单声道，只能减少 WAV 文件大小、写盘、网络传输和播放带宽，**不会显著减少已经发生的 TTS/codec 模型计算，也不会让模型推理 RTF 接近 1**。
+
+不能只修改 WAV header 中的采样率或声道字段：仅把 48000 改成 24000 会改变播放速度和时长，造成错误音频以及虚假的 RTF。若要从模型计算层面获得 24 kHz/单声道收益，需要兼容的低采样率单声道 codec 模型，并重新导出，通常还需要训练或微调；不能只修改 codec JSON 的 `sample_rate`/`channels`。
+
+### 已尝试或待验证的优化方向
+
+1. **保持 8 线程共享池**：这是当前实际最快的线程配置；继续盲目增线程收益有限。
+2. **优先 profile 逐帧 decode 算子**：INT8 `moss_tts_decode_step.onnx` 中有 48 个 `DynamicQuantizeLinear` 和 48 个 `MatMulInteger`，需要确认 vendor ORT 对这些动态 INT8 算子是否有高效 RVV kernel。当前只能确认程序使用 CPU EP、二进制包含 RVV 属性/指令，不能据此断言这些热点算子运行时已经命中 RVV 优化。
+3. **减少逐帧开销**：检查每帧 tensor/KV cache 包装、分配和拷贝，并评估把 local sampler 与 global decode 融合导出，减少重复 ORT `Run()` 调用和中间数据搬运。
+4. **对比 codec streaming decode**：codec metadata 提供 `moss_audio_tokenizer_decode_step.onnx` 及 cache schema，可测试首包延迟和总耗时；但逐步调用也可能增加 ORT 调度开销，必须以板端 RTF 实测决定是否采用。
+5. **greedy sampler 暂不采用**：Python ORT 隔离测试中 fixed sampler 平均约 60.25 ms/run，greedy sampler 约 62.23 ms/run，并没有更快。临时接入 C++ 时还遇到 `Invalid input name: repetition_penalty`，相关实验已回退，不能把 greedy 当作已验证优化。
+6. **CPU 频率不是决定性突破口**：测试时 X100 约为 2.00 GHz，硬件最高约 2.15 GHz；即使有权限锁到最高频，理论频率增幅也只有约 7.5%，不足以单独把 RTF 从约 1.66 降到 1。
+7. **需要更大幅提升时**：优先考虑更小/蒸馏的 TTS 模型、静态量化或融合算子导出，以及真正低采样率/单声道 codec，而不是只做输出后处理。
+
+可选的 `--sample-rate 24000`、`--mono` 若后续加入，应明确定位为输出格式/传输优化，默认仍保留原生 48 kHz stereo，并用模型原生音频时长诚实计算推理 RTF。
