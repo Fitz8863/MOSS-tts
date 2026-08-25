@@ -412,6 +412,11 @@ private:
 
             std::vector<int32_t> row(paths_.cfg.n_vq + 1, paths_.cfg.audio_pad_token_id);
             row[0] = paths_.cfg.audio_assistant_slot_token_id;
+            // Feed the sampled audio codes back into the next global decode
+            // step.  Leaving these positions as audio_pad_token_id makes every
+            // decode step see an empty assistant frame, so the local sampler
+            // often predicts should_continue=0 after the first 80 ms frame.
+            for (int q = 0; q < paths_.cfg.n_vq; ++q) row[q + 1] = frame[q];
             std::vector<int32_t> plen{past_len};
             std::vector<Ort::Value> inputs;
             inputs.reserve(2 + past.size() - 1);

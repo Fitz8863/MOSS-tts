@@ -121,3 +121,25 @@ run_k3_tts_interactive.sh → cpp/build-k3/moss-tts-onnx --interactive
 ```
 
 如果二进制不存在，wrapper 会调用一次 `build_k3_cpp.sh`，不会 fallback 到 Python。
+
+## 2026-08-25 指定中文文本短音频修复与板端复测
+
+复现文本：`欢迎关注模思智能、上海创智学院与复旦大学自然语言处理实验室。`
+
+根因是 C++ `run_decode()` 在 local sampler 产生音频 frame 后，下一次 `moss_tts_decode_step.onnx` 的 `input_ids` 只写入 assistant slot，未写入 `frame_token_ids` 的 16 个音频码，导致 decode 每步接收全 `audio_pad_token_id`，模型经常第一帧就结束。已修复为将 `frame[q]` 写入 `row[q + 1]`。
+
+板端重新编译成功，参数：`CPUExecutionProvider`、threads=4、CPU affinity=0-7、`MOSS_MAX_NEW_FRAMES=375`、seed=1234。
+
+```text
+FP32: frames=264960 audio=5.52s wall=14.2717s RTF=2.58545
+INT8: frames=257280 audio=5.36s wall=10.5229s RTF=1.96323
+```
+
+交互模式同一进程连续输入中文和英文，确认 `initialized_once` 只出现一次，且 WAV 被后一次输出覆盖：
+
+```text
+FP32 中文：5.52s, RTF=2.57019；英文：3.92s, RTF=2.58426
+INT8 中文：5.36s, RTF=1.9235；英文：2.96s, RTF=1.86053
+```
+
+另外以 seed=1、max_new_frames=100 交叉验证：FP32 生成 7.12s（RTF=2.61922），INT8 生成 5.28s（RTF=1.9715）。当前结论：短音频的 C++ decode 输入错误已修复；FP32 和 INT8 都能生成与文本长度相匹配的多秒音频。X100 CPU 路线当前 RTF 仍约为 1.86～2.62，尚未达到实时（RTF<1）。

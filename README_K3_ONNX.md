@@ -309,3 +309,53 @@ ONNX prefill KV Cache 的布局是：
 | `MOSS-tts-llamacpp` | C++ SpaceMIT ggml/llama.cpp | GGUF | A100/IME2、repack 和 GGUF RTF 另行记录 |
 
 两边的脚本、模型格式、构建目录和 README 不应互相覆盖。
+
+## 2026-08-25 修复指定中文文本仅生成 0.08 秒
+
+复现文本：
+
+```text
+欢迎关注模思智能、上海创智学院与复旦大学自然语言处理实验室。
+```
+
+### 根因
+
+问题不在 WAV 保存、48 kHz 采样率、FP32/INT8 文件选择或 `max_new_frames`。C++ 生成循环已经从 local sampler 得到了当前音频帧 `frame_token_ids`，但在调用下一次 `moss_tts_decode_step.onnx` 时，只填入了 `audio_assistant_slot_token_id`，没有把 16 个采样音频码写入 `input_ids[0, 0, 1:17]`，这些位置一直是 `audio_pad_token_id`。因此全局 decode 每一步都看到了“空的 assistant 音频帧”，local sampler 很容易在第一帧返回 `should_continue=0`，最终 WAV 只有：
+
+```text
+1 frame × 3840 samples/frame ÷ 48000 samples/s = 0.08 s
+```
+
+修复位置：`cpp/src/main.cpp` 的 `run_decode()`。现在每一步都会执行：
+
+```cpp
+row[0] = audio_assistant_slot_token_id;
+for (int q = 0; q < n_vq; ++q) row[q + 1] = frame[q];
+```
+
+### 板端验证
+
+板端：`bianbu-spacemitk3picoitx`，目录：`/home/spacemit/projects/MOSS-tts`。验证前重新运行 `./build_k3_cpp.sh` 编译成功，使用 `CPUExecutionProvider`、4 个线程、默认 `CPU affinity=0-7`、`MOSS_MAX_NEW_FRAMES=375`、`MOSS_SEED=1234`。
+
+| 模型 | 修复前 | 修复后 | 修复后 RTF |
+|---|---:|---:|---:|
+| FP32 `MOSS-TTS-Nano-100M-ONNX` | 0.08 s（部分 seed） | 5.52 s / 264960 frames | 2.58545 |
+| INT8 `MOSS-TTS-Nano-100M-INT8` | 0.08 s（该文本多个 seed） | 5.36 s / 257280 frames | 1.96323 |
+
+对应单次命令输出：
+
+```text
+FP32: frames=264960 audio=5.52s wall=14.2717s RTF=2.58545
+INT8: frames=257280 audio=5.36s wall=10.5229s RTF=1.96323
+```
+
+同时验证了常驻交互模式：同一进程只打印一次 `initialized_once`，连续输入两条文本后均能生成并覆盖同一个 WAV：
+
+```text
+FP32 中文：frames=264960 audio=5.52s wall=14.1874s RTF=2.57019
+FP32 英文：frames=188160 audio=3.92s wall=10.1303s RTF=2.58426
+INT8 中文：frames=257280 audio=5.36s wall=10.31s RTF=1.9235
+INT8 英文：frames=142080 audio=2.96s wall=5.50716s RTF=1.86053
+```
+
+另外用 `MOSS_SEED=1`、`MOSS_MAX_NEW_FRAMES=100` 做了交叉验证：FP32 生成 7.12 s（RTF=2.61922），INT8 生成 5.28 s（RTF=1.9715），均不再是 0.08 s。修复后该指定文本不再固定提前结束；当前 X100 CPU 路线 RTF 仍大于 1，说明还没有达到实时播放，但 INT8 在本次长文本测试中比 FP32 更快。RTF 会受文本、采样随机数、线程和 CPU 负载影响，不能仅用一次短文本结果代表整体性能。
